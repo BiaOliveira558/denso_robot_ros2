@@ -25,8 +25,9 @@ setup(
     entry_points={
     'console_scripts': [
         'move_joints = denso_scripts.move_joints:main',
-        'move_xyz    = denso_scripts.move_xyz:main',
-        'main        = denso_scripts.main:main', 
+        'move_xyz = denso_scripts.move_xyz:main',
+        'main = denso_scripts.main:main',
+        'keyboard_teleop = denso_scripts.keyboard_teleop:main',
     ],
 },
 )
