@@ -58,8 +58,7 @@ class MoveJointsNode(Node):
         if self._index >= len(self._targets):
             self.get_logger().info('Todos os movimentos de joints concluídos.')
             self.done = True
-            rclpy.shutdown()
-            return
+            return  # ← removido o rclpy.shutdown()
 
         positions, duration = self._targets[self._index]
         self.get_logger().info('Aguardando servidor de ação...')
@@ -89,8 +88,7 @@ class MoveJointsNode(Node):
         handle = future.result()
         if not handle.accepted:
             self.get_logger().error('Goal rejeitado!')
-            rclpy.shutdown()
-            return
+            return  # ← removido o rclpy.shutdown()
         self.get_logger().info('Goal aceito, aguardando resultado...')
         handle.get_result_async().add_done_callback(self._on_result)
 
