@@ -46,7 +46,7 @@ ee_frame_name: J6  # The name of the end effector link, used to return the EE po
 robot_link_command_frame:  base_link  # commands must be given in the frame of a robot link. Usually either the base or end effector
 
 ## Stopping behaviour
-incoming_command_timeout:  0.05  # Stop servoing if X seconds elapse without a new command
+incoming_command_timeout:  0.1  # Stop servoing if X seconds elapse without a new command
 # If 0, republish commands forever even if the robot is stationary. Otherwise, specify num. to publish.
 # Important because ROS may drop some messages and we need the robot to halt reliably.
 num_outgoing_halt_msgs_to_publish: 1
@@ -57,9 +57,9 @@ num_outgoing_halt_msgs_to_publish: 1
 #joint_limit_margin: 0.1 # added as a buffer to joint limits [radians]. If moving quickly, make this larger.
 #leaving_singularity_threshold_multiplier: 2.0 # Multiply the hard stop limit by this when leaving singularity (see https://github.com/ros-planning/moveit2/pull/620)
 
-lower_singularity_threshold:  50.0
-hard_stop_singularity_threshold: 100.0
-joint_limit_margin: 0.05
+lower_singularity_threshold:  170.0
+hard_stop_singularity_threshold: 300.0
+joint_limit_margin: 0.01
 leaving_singularity_threshold_multiplier: 2.0
 
 ## Topic names
