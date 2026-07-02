@@ -412,7 +412,7 @@ def generate_launch_description():
     ros_gz_image_bridge = Node(
         package='ros_gz_image',
         executable='image_bridge',
-        arguments=['/basic_camera'], #camera topic name defined in the <topic> tag in the camera's .xacro file
+        arguments=['/basic_camera/rgb', '/basic_camera/depth'], #camera topic name defined in the <topic> tag in the camera's .xacro file
         output='screen',
         condition=IfCondition(sim and basic_camera)
     )
