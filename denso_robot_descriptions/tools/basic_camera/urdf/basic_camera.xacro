@@ -30,10 +30,10 @@
         <!-- Sensor RGB -->
         <sensor name="${namespace}basic_camera_rgb" type="camera">
           <camera>
-            <horizontal_fov>1.047</horizontal_fov>
+            <horizontal_fov>1.6</horizontal_fov>
             <image>
-              <width>320</width>
-              <height>240</height>
+              <width>640</width>
+              <height>480</height>
               <format>R8G8B8</format>
             </image>
             <clip>
@@ -50,10 +50,10 @@
         <!-- Sensor Depth -->
         <sensor name="${namespace}basic_camera_depth" type="depth">
           <camera>
-            <horizontal_fov>1.047</horizontal_fov>
+            <horizontal_fov>1.6</horizontal_fov>
             <image>
-              <width>320</width>
-              <height>240</height>
+              <width>640</width>
+              <height>480</height>
             </image>
             <clip>
               <near>0.1</near>
