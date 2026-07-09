@@ -23,7 +23,7 @@
     <plugin
       filename="ignition-gazebo-sensors-system"
       name="gz::sim::systems::Sensors">
-      <render_engine>ogre</render_engine>
+      <render_engine>ogre2</render_engine>
     </plugin>
 
     <light type="directional" name="sun">
@@ -69,26 +69,36 @@
 
     <model name="cubo">
       <static>true</static>
-      <pose>0.4 0 0.05 0 0 0</pose>
+      <pose>0.5 0 0.05 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry>
             <box>
-              <size>0.05 0.05 0.05</size>
+              <size>0.08 0.08 0.08</size>
             </box>
           </geometry>
           <material>
-            <ambient>0.8 0.2 0.2 1</ambient>
-            <diffuse>0.8 0.2 0.2 1</diffuse>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.05 0.05 0.05 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
           </material>
         </visual>
         <collision name="collision">
           <geometry>
             <box>
-              <size>0.05 0.05 0.05</size>
+              <size>0.1 0.1 0.1</size>
             </box>
           </geometry>
         </collision>
+        <visual name="aruco_marker">
+          <pose>0 0 0.041 0 0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>/root/denso_ws/src/denso_robot_ros2/denso_robot_descriptions/models/aruco_marker.obj</uri>
+              <scale>2.0 2.0 1</scale>
+            </mesh>
+          </geometry>
+        </visual>
       </link>
     </model>
 
