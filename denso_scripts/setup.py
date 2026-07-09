@@ -28,7 +28,7 @@ setup(
         'move_xyz = denso_scripts.move_xyz:main',
         'main = denso_scripts.main:main',
         'keyboard_teleop = denso_scripts.keyboard_teleop:main',
-        'PBVS = denso_scripts.PBVS:main',
+        'aruco_pose_estimator = denso_scripts.aruco_pose_estimator:main',
     ],
 },
 )
