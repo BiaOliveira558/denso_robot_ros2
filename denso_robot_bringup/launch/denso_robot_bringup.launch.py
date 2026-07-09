@@ -417,6 +417,16 @@ def generate_launch_description():
         condition=IfCondition(sim and basic_camera)
     )
 
+    ros_gz_camera_info_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            '/basic_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+        ],
+        output='screen',
+        condition=IfCondition(sim and basic_camera)
+)
+
     # Get parameters for the Servo node
     servo_yaml = load_yaml('denso_robot_moveit_config', 'config/moveit_servo.yaml')
 
@@ -446,6 +456,7 @@ def generate_launch_description():
         gazebo,
         spawn_entity,
         ros_gz_image_bridge,
+        ros_gz_camera_info_bridge,
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
         servo_node
