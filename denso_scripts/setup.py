@@ -29,6 +29,7 @@ setup(
         'main = denso_scripts.main:main',
         'keyboard_teleop = denso_scripts.keyboard_teleop:main',
         'aruco_pose_estimator = denso_scripts.aruco_pose_estimator:main',
+        'pbvs_controller = denso_scripts.pbvs_controller:main',
     ],
 },
 )
