@@ -15,6 +15,14 @@ import cv2.aruco as aruco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+# Rotação fixa óptico (OpenCV: X=direita, Y=baixo, Z=frente) →
+# físico (basic_camera_link, REP-103: X=frente, Y=esquerda, Z=cima)
+R_OPT2PHYS = np.array([
+    [ 0,  0,  1],
+    [-1,  0,  0],
+    [ 0, -1,  0],
+], dtype=np.float64)
+
 
 class ArucoPoseEstimator(Node):
     def __init__(self):
@@ -107,15 +115,20 @@ class ArucoPoseEstimator(Node):
 
     def publish_pose(self, rvec, tvec, stamp):
         rot_matrix, _ = cv2.Rodrigues(rvec)
-        quat = R.from_matrix(rot_matrix).as_quat()  # [x, y, z, w]
+
+        # Converte posição e orientação de óptico → físico (basic_camera_link)
+        tvec_phys = R_OPT2PHYS @ tvec.flatten()
+        rot_matrix_phys = R_OPT2PHYS @ rot_matrix
+
+        quat = R.from_matrix(rot_matrix_phys).as_quat()  # [x, y, z, w]
 
         pose_msg = PoseStamped()
         pose_msg.header.stamp = stamp
         pose_msg.header.frame_id = self.camera_frame
 
-        pose_msg.pose.position.x = float(tvec[0])
-        pose_msg.pose.position.y = float(tvec[1])
-        pose_msg.pose.position.z = float(tvec[2])
+        pose_msg.pose.position.x = float(tvec_phys[0])
+        pose_msg.pose.position.y = float(tvec_phys[1])
+        pose_msg.pose.position.z = float(tvec_phys[2])
 
         pose_msg.pose.orientation.x = float(quat[0])
         pose_msg.pose.orientation.y = float(quat[1])
