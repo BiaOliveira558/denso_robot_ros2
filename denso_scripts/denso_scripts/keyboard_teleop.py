@@ -98,6 +98,8 @@ class KeyboardTeleop(Node):
         msg.twist.angular.z = az
         self._pub.publish(msg)
 
+        print(f'Linear: x={lx:.3f}  y={ly:.3f}  z={lz:.3f}  |  Angular: x={ax:.3f}  y={ay:.3f}  z={az:.3f}')
+
     def stop(self):
         self.publish(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
