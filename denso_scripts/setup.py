@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'denso_scripts'
@@ -10,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -23,13 +26,13 @@ setup(
         ],
     },
     entry_points={
-    'console_scripts': [
-        'move_joints = denso_scripts.move_joints:main',
-        'move_xyz = denso_scripts.move_xyz:main',
-        'main = denso_scripts.main:main',
-        'keyboard_teleop = denso_scripts.keyboard_teleop:main',
-        'aruco_pose_estimator = denso_scripts.aruco_pose_estimator:main',
-        'pbvs_controller = denso_scripts.pbvs_controller:main',
-    ],
-},
+        'console_scripts': [
+            'move_joints = denso_scripts.move_joints:main',
+            'move_xyz = denso_scripts.move_xyz:main',
+            'main = denso_scripts.main:main',
+            'keyboard_teleop = denso_scripts.keyboard_teleop:main',
+            'aruco_pose_estimator = denso_scripts.aruco_pose_estimator:main',
+            'pbvs_controller = denso_scripts.pbvs_controller:main',
+        ],
+    },
 )
