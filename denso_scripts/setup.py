@@ -28,7 +28,8 @@ setup(
         'move_xyz = denso_scripts.move_xyz:main',
         'main = denso_scripts.main:main',
         'keyboard_teleop = denso_scripts.keyboard_teleop:main',
-        'PBVS = denso_scripts.PBVS:main',
+        'aruco_feature_extractor = denso_scripts.aruco_feature_extractor:main',
+        'ibvs_controller = denso_scripts.ibvs_controller:main',
     ],
 },
 )
