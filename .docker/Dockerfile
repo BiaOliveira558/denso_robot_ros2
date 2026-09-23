@@ -25,4 +25,8 @@ RUN apt-get update && rosdep install --ignore-src --from-paths src -y -r
 
 RUN rm -rf src/denso_robot_ros2/
 
+# Carrega o ROS e o workspace automaticamente em todo shell
+RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /root/.bashrc && \
+    echo "[ -f $COLCON_WS/install/setup.bash ] && source $COLCON_WS/install/setup.bash" >> /root/.bashrc
+
 CMD ["bash"]

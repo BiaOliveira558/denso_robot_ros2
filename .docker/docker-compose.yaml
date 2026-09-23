@@ -16,18 +16,13 @@ services:
     
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /dev/dri:/dev/dri 
+      - /dev:/dev
       - ../:/root/denso_ws/src/denso_robot_ros2
 
-    devices:
-      - /dev/video0:/dev/video0
-      - /dev/video1:/dev/video1
-      - /dev/video2:/dev/video2
-      - /dev/video3:/dev/video3
-      - /dev/video4:/dev/video4
-      - /dev/video5:/dev/video5
-      - /dev/video6:/dev/video6
-      - /dev/video7:/dev/video7
+    device_cgroup_rules:
+      - 'c 81:* rmw'    # câmeras (V4L2, /dev/video*)
+      - 'c 189:* rmw'   # USB cru (/dev/bus/usb, ex.: RealSense)
+      - 'c 226:* rmw'   # GPU (/dev/dri)
 
     network_mode: "host"
 
