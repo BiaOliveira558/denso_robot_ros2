@@ -2,41 +2,33 @@
 """
 denso_keyboard_teleop.py
 ------------------------
-Controle do end-effector do braço Denso via teclado usando MoveIt Servo.
-
-Uso:
-    ros2 run denso_scripts keyboard_teleop
-
-Teclas de controle:
-    w / s  →  +X / -X  (frente/trás)
-    a / d  →  +Y / -Y  (esquerda/direita)
-    q / e  →  +Z / -Z  (cima/baixo)
-    i / k  →  rotação +Y / -Y (pitch)
-    j / l  →  rotação +Z / -Z (yaw)
-    u / o  →  rotação +X / -X (roll)
-    ESPAÇO →  para o movimento
-    ESC    →  encerra o nó
+Controle do end-effector via MoveIt Servo — mapeamento direto em base_link.
+Movimento contínuo enquanto a tecla é mantida pressionada (usando
+repetição automática do teclado do SO + timeout de "tecla solta").
 """
 
 import sys
 import tty
 import termios
+import select
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
-from std_msgs.msg import Header
 import time
 
 
-LINEAR_SPEED  = 0.05   # m/s
-ANGULAR_SPEED = 0.2    # rad/s
-FRAME_ID      = 'base_link'
+LINEAR_SPEED   = 0.12
+ANGULAR_SPEED  = 0.4
+FRAME_ID       = 'base_link'
+PUBLISH_RATE   = 50.0   # Hz de publicação contínua
+KEY_TIMEOUT    = 0.15   # segundos sem receber a tecla = considera "soltou"
 
+# X e Y invertidos em relação à versão anterior (W/S agora é Y, A/D é X)
 KEY_BINDINGS = {
-    'w': ( LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0,           0.0),
-    's': (-LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0,           0.0),
-    'a': ( 0.0,           LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
-    'd': ( 0.0,          -LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
+    'w': ( 0.0,           LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
+    's': ( 0.0,          -LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
+    'a': ( LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0,           0.0),
+    'd': (-LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0,           0.0),
     'q': ( 0.0,           0.0,           LINEAR_SPEED,  0.0,           0.0,           0.0),
     'e': ( 0.0,           0.0,          -LINEAR_SPEED,  0.0,           0.0,           0.0),
     'u': ( 0.0,           0.0,           0.0,           ANGULAR_SPEED, 0.0,           0.0),
@@ -45,16 +37,16 @@ KEY_BINDINGS = {
     'k': ( 0.0,           0.0,           0.0,           0.0,          -ANGULAR_SPEED, 0.0),
     'j': ( 0.0,           0.0,           0.0,           0.0,           0.0,           ANGULAR_SPEED),
     'l': ( 0.0,           0.0,           0.0,           0.0,           0.0,          -ANGULAR_SPEED),
-    ' ': ( 0.0,           0.0,           0.0,           0.0,           0.0,           0.0),
 }
 
 MENU = """
 ╔══════════════════════════════════════╗
 ║    DENSO Keyboard Teleop (Servo)     ║
+║    Segure a tecla para mover          ║
 ╠══════════════════════════════════════╣
 ║  Translação:                         ║
-║    W / S  →  +X / -X (frente/trás)  ║
-║    A / D  →  +Y / -Y (esq/dir)      ║
+║    W / S  →  +Y / -Y                 ║
+║    A / D  →  +X / -X                 ║
 ║    Q / E  →  +Z / -Z (cima/baixo)   ║
 ║                                      ║
 ║  Rotação:                            ║
@@ -63,14 +55,16 @@ MENU = """
 ║    J / L  →  yaw   +/-               ║
 ║                                      ║
 ║  ESPAÇO   →  parar                   ║
-║  ESC      →  sair                    ║
+║  ESC/Ctrl+C → sair                   ║
 ╚══════════════════════════════════════╝
 """
 
 
-def get_key(settings):
+def get_key_nonblocking(settings, timeout):
+    """Lê uma tecla se disponível dentro de 'timeout' segundos; senão retorna None."""
     tty.setraw(sys.stdin.fileno())
-    key = sys.stdin.read(1)
+    rlist, _, _ = select.select([sys.stdin], [], [], timeout)
+    key = sys.stdin.read(1) if rlist else None
     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
     return key
 
@@ -80,11 +74,8 @@ class KeyboardTeleop(Node):
     def __init__(self):
         super().__init__('denso_keyboard_teleop')
         self._pub = self.create_publisher(
-            TwistStamped,
-            '/servo_node/delta_twist_cmds',
-            10
-        )
-        self.get_logger().info('Keyboard teleop iniciado.')
+            TwistStamped, '/servo_node/delta_twist_cmds', 10)
+        self.get_logger().info('Keyboard teleop iniciado (movimento contínuo).')
 
     def publish(self, lx, ly, lz, ax, ay, az):
         msg = TwistStamped()
@@ -110,39 +101,44 @@ def main():
     print(MENU)
     print('Aguardando teclas...\n')
 
+    period = 1.0 / PUBLISH_RATE
+    last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    last_key_time = 0.0
+    moving = False
+
     try:
         while rclpy.ok():
-            key = get_key(settings)
+            key = get_key_nonblocking(settings, period)
 
-            # ESC
-            if ord(key) == 27 or key == '\x03':
-                print('\nEncerrando...')
-                node.stop()
-                break
+            if key:
+                if ord(key) == 27 or key == '\x03':
+                    print('\nEncerrando...')
+                    break
 
-            if key in KEY_BINDINGS:
-                lx, ly, lz, ax, ay, az = KEY_BINDINGS[key]
-                node.publish(lx, ly, lz, ax, ay, az)
-                time.sleep(1)
-                node.stop()
                 if key == ' ':
-                    print('PARADO', end='\r')
-                else:
-                    direction = {
-                        'w': '+X (frente)', 's': '-X (trás)',
-                        'a': '+Y (esq)',    'd': '-Y (dir)',
-                        'q': '+Z (cima)',   'e': '-Z (baixo)',
-                        'u': 'roll+',      'o': 'roll-',
-                        'i': 'pitch+',     'k': 'pitch-',
-                        'j': 'yaw+',       'l': 'yaw-',
-                    }
-                    print(f'Movendo: {direction.get(key, key)}    ', end='\r')
-            else:
+                    last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                    moving = False
+                    node.stop()
+                    print('PARADO                    ', end='\r')
+                elif key in KEY_BINDINGS:
+                    last_cmd = KEY_BINDINGS[key]
+                    last_key_time = time.time()
+                    moving = True
+                    print(f'Movendo: {key}                    ', end='\r')
+
+            # se estava se movendo mas a tecla parou de chegar (soltou) por muito tempo, para
+            if moving and (time.time() - last_key_time) > KEY_TIMEOUT:
+                moving = False
+                last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 node.stop()
+                print('PARADO                    ', end='\r')
+            elif moving:
+                node.publish(*last_cmd)
 
     except Exception as e:
         print(f'\nErro: {e}')
     finally:
+        node.stop()
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
         node.destroy_node()
         rclpy.shutdown()

@@ -30,6 +30,6 @@ setup(
         'keyboard_teleop = denso_scripts.keyboard_teleop:main',
         'aruco_feature_extractor = denso_scripts.aruco_feature_extractor:main',
         'ibvs_controller = denso_scripts.ibvs_controller:main',
-    ],
+        'aruco_feature_extractor_real = denso_scripts.aruco_feature_extractor_real:main',    ],
 },
 )
