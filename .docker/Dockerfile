@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-$ROS_DISTRO-moveit-servo \
       ros-$ROS_DISTRO-ros2-control \
       ros-$ROS_DISTRO-ros2-controllers \
+      ros-$ROS_DISTRO-realsense2-camera \
       build-essential \
       git \
       nano \
