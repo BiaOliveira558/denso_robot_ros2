@@ -19,18 +19,20 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from typing import Text
 from launch.launch_context import LaunchContext
 from launch.substitution import Substitution
 from typing import Iterable
-from typing import Text
 from launch.some_substitutions_type import SomeSubstitutionsType
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import ExecuteProcess, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 
 
 """ Function for loading a yaml file. """
@@ -155,12 +157,79 @@ def generate_launch_description():
             description='Start robot with fake hardware mirroring command to its states.'))
     declared_arguments.append(
         DeclareLaunchArgument(
+            'gazebo_args', default_value='-r -v 4',
+            description='Arguments passed to Gazebo Sim before the world file.'))
+    declared_arguments.append(
+        DeclareLaunchArgument('use_servo', default_value='false', description='Launch MoveIt Servo?')
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
             'verbose', default_value='false',
             description='Print out additional debug information.'))
     declared_arguments.append(
         DeclareLaunchArgument(
             'basic_camera', default_value='false',
-            description='Add basic_camera in J6'
+            description='Attach the touch tool with RealSense D405 to J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'calib_tool', default_value='false',
+            description='Add calib tool in J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'calib_xyz', default_value='0 0 0.05',
+            description='XYZ position of calib tool relative to J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'calib_rpy', default_value='0 0 0',
+            description='RPY orientation of calib tool relative to J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'calib_mesh_xyz', default_value='0 0 -0.05',
+            description='XYZ offset of calib tool mesh to compensate for Fusion export'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'calib_mesh_rpy', default_value='0 0 0',
+            description='RPY offset of calib tool mesh to compensate for Fusion export'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder', default_value='false',
+            description='Add cellphone holder AprilTag markers in J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_xyz', default_value='-0.021230953 0 0.05367',
+            description='XYZ position of cellphone holder tag plane relative to J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_rpy', default_value='0 0 1.57079632679',
+            description='RPY orientation of cellphone holder tag plane relative to J6'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_mesh_xyz', default_value='0 0 0.036991104',
+            description='XYZ offset of cellphone holder STL relative to the tag plane frame'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_mesh_rpy', default_value='0 0 1.57079632679',
+            description='RPY offset of cellphone holder STL relative to the tag plane frame'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_mesh_scale', default_value='0.001 0.001 0.001',
+            description='Scale of cellphone holder STL mesh'
+        ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'cellphone_holder_tag_size', default_value='0.031',
+            description='Visual side length of each cellphone holder AprilTag marker'
         ))
     declared_arguments.append(
         DeclareLaunchArgument(
@@ -172,6 +241,10 @@ def generate_launch_description():
             'rpy', default_value='0 0 0',
             description='RPY position of arm'
         ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'aruco', default_value='true',
+            description='Launch ArUco feature extractor?'))
 
 # Initialize Arguments
     denso_robot_model = LaunchConfiguration('model')
@@ -185,13 +258,28 @@ def generate_launch_description():
     moveit_config_file = LaunchConfiguration('moveit_config_file')
     namespace = LaunchConfiguration('namespace')
     rviz = LaunchConfiguration('rviz')
+    use_servo = LaunchConfiguration('use_servo')
     sim = LaunchConfiguration('sim')
+    gazebo_args = LaunchConfiguration('gazebo_args')
     basic_camera = LaunchConfiguration('basic_camera')
+    calib_tool = LaunchConfiguration('calib_tool')
+    calib_xyz = LaunchConfiguration('calib_xyz')
+    calib_rpy = LaunchConfiguration('calib_rpy')
+    calib_mesh_xyz = LaunchConfiguration('calib_mesh_xyz')
+    calib_mesh_rpy = LaunchConfiguration('calib_mesh_rpy')
+    cellphone_holder = LaunchConfiguration('cellphone_holder')
+    cellphone_holder_xyz = LaunchConfiguration('cellphone_holder_xyz')
+    cellphone_holder_rpy = LaunchConfiguration('cellphone_holder_rpy')
+    cellphone_holder_mesh_xyz = LaunchConfiguration('cellphone_holder_mesh_xyz')
+    cellphone_holder_mesh_rpy = LaunchConfiguration('cellphone_holder_mesh_rpy')
+    cellphone_holder_mesh_scale = LaunchConfiguration('cellphone_holder_mesh_scale')
+    cellphone_holder_tag_size = LaunchConfiguration('cellphone_holder_tag_size')
     verbose = LaunchConfiguration('verbose')
     controllers_file = LaunchConfiguration('controllers_file')
     robot_controller = LaunchConfiguration('robot_controller')
     xyz = LaunchConfiguration('xyz')
     rpy = LaunchConfiguration('rpy')
+    aruco = LaunchConfiguration('aruco')
 
     denso_robot_core_pkg = get_package_share_directory('denso_robot_core')
 
@@ -213,10 +301,22 @@ def generate_launch_description():
             'verbose:=', verbose, ' ',
             'sim:=', sim, ' ',
             'basic_camera:=', basic_camera, ' ',
+            'calib_tool:=', calib_tool, ' ',
+            'calib_xyz:="', calib_xyz, '" ',
+            'calib_rpy:="', calib_rpy, '" ',
+            'calib_mesh_xyz:="', calib_mesh_xyz, '" ',
+            'calib_mesh_rpy:="', calib_mesh_rpy, '" ',
+            'cellphone_holder:=', cellphone_holder, ' ',
+            'cellphone_holder_xyz:="', cellphone_holder_xyz, '" ',
+            'cellphone_holder_rpy:="', cellphone_holder_rpy, '" ',
+            'cellphone_holder_mesh_xyz:="', cellphone_holder_mesh_xyz, '" ',
+            'cellphone_holder_mesh_rpy:="', cellphone_holder_mesh_rpy, '" ',
+            'cellphone_holder_mesh_scale:="', cellphone_holder_mesh_scale, '" ',
+            'cellphone_holder_tag_size:=', cellphone_holder_tag_size, ' ',
             'xyz:="', xyz, '" ',
             'rpy:="', rpy, '" '
         ])
-    robot_description = {'robot_description': robot_description_content}
+    robot_description = {'robot_description': ParameterValue(robot_description_content, value_type=str)}
 
 # --------- MoveIt Configuration ---------
 
@@ -227,9 +327,13 @@ def generate_launch_description():
                 [FindPackageShare(moveit_config_package), 'srdf', moveit_config_file]),
             ' ',
             'model:=', denso_robot_model, ' ',
-            'namespace:=', namespace, ' '
+            'namespace:=', namespace, ' ',
+            'basic_camera:=', basic_camera, ' ',
+            'calib_tool:=', calib_tool, ' ',
+            'calib_mesh_xyz:="', calib_mesh_xyz, '" ',
+            'calib_mesh_rpy:="', calib_mesh_rpy, '" '
         ])
-    robot_description_semantic = {'robot_description_semantic': robot_description_semantic_content}
+    robot_description_semantic = {'robot_description_semantic': ParameterValue(robot_description_semantic_content, value_type=str)}
     kinematics_yaml = load_yaml('denso_robot_moveit_config', 'config/kinematics.yaml')
     robot_description_kinematics = {'robot_description_kinematics': kinematics_yaml}
 
@@ -365,18 +469,8 @@ def generate_launch_description():
             robot_description,
             robot_description_semantic,
             ompl_planning_pipeline_config,
-            robot_description_kinematics
-        ])
-
-    # Static TF
-    static_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_transform_publisher',
-        output='log',
-        arguments=[
-            '--frame-id', 'world',
-            '--child-frame-id', TextJoinSubstitution([namespace], 'base_link', '')
+            robot_description_kinematics,
+            {'use_sim_time': sim}
         ])
 
 # --------- Gazebo Nodes (only if 'sim:=true') ---------
@@ -396,7 +490,7 @@ def generate_launch_description():
                 'gz_sim.launch.py'
             ])
         ),
-        launch_arguments={'gz_args': ['-r', '-v4', ' ', world]}.items(), #'-r' == run simulation on start (without this flag gazebo not connect with ros2_controllers)
+        launch_arguments={'gz_args': [gazebo_args, ' ', world]}.items(), #'-r' == run simulation on start (without this flag gazebo not connect with ros2_controllers)
                                                                   #'-v 4' == verbose level 4 (max level of console output)
         condition=IfCondition(sim)
     )
@@ -412,20 +506,23 @@ def generate_launch_description():
     ros_gz_image_bridge = Node(
         package='ros_gz_image',
         executable='image_bridge',
-        arguments=['/basic_camera/rgb', '/basic_camera/depth'], #camera topic name defined in the <topic> tag in the camera's .xacro file
+        arguments=[['/', namespace, 'basic_camera'], ['/', namespace, 'basic_camera/depth/image_raw']],
         output='screen',
-        condition=IfCondition(sim and basic_camera)
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true'"]))
     )
 
     ros_gz_camera_info_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            '/basic_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            ['/', namespace, 'basic_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'],
+            ['/', namespace, 'basic_camera/depth/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'],
         ],
         output='screen',
-        condition=IfCondition(sim and basic_camera)
-)
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true'"]))
+    )
 
     # Get parameters for the Servo node
     servo_yaml = load_yaml('denso_robot_moveit_config', 'config/moveit_servo.yaml')
@@ -437,6 +534,7 @@ def generate_launch_description():
     servo_node = Node(
         package='moveit_servo',
         executable='servo_node_main',
+        condition=IfCondition(use_servo),
         parameters=[
             servo_params,
             robot_description,
@@ -447,19 +545,75 @@ def generate_launch_description():
         output='screen',
     )
 
+    start_servo = ExecuteProcess(
+        cmd=['ros2', 'service', 'call', '/servo_node/start_servo', 'std_srvs/srv/Trigger', '{}'],
+        output='screen',
+        condition=IfCondition(use_servo)
+    )
+
+    start_servo_after_controllers = RegisterEventHandler(
+        OnProcessExit(
+            target_action=robot_controller_spawner,
+            on_exit=[start_servo]
+        )
+    )
+
+    aruco_extractor_sim = Node(
+        package='denso_scripts',
+        executable='aruco_feature_extractor',
+        name='aruco_feature_extractor',
+        output='screen',
+        parameters=[{
+            'image_topic': '/basic_camera',
+            'depth_topic': '/basic_camera/depth/image_raw',
+            'camera_info_topic': '/basic_camera/camera_info',
+            'use_sim_time': True,
+        }],
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true' and '", aruco, "'.lower() == 'true'"]))
+    )
+
+    aruco_extractor_real = Node(
+        package='denso_scripts',
+        executable='aruco_feature_extractor',
+        name='aruco_feature_extractor',
+        output='screen',
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'false' and '", aruco, "'.lower() == 'true'"]))
+    )
+
+    realsense = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py'
+            ])
+        ),
+        launch_arguments={
+            'camera_namespace': 'camera',
+            'camera_name': 'camera',
+            'align_depth.enable': 'true',
+        }.items(),
+        condition=UnlessCondition(sim)
+    )
+
     nodes_to_start = [
         control_node,
         robot_controller_spawner,
         move_group_node,
         rviz_node,
-        static_tf,
         gazebo,
         spawn_entity,
         ros_gz_image_bridge,
         ros_gz_camera_info_bridge,
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
-        servo_node
+        servo_node,
+        start_servo_after_controllers,
+        aruco_extractor_sim,
+        aruco_extractor_real,
+        realsense
     ]
 
     return LaunchDescription(declared_arguments + nodes_to_start)
