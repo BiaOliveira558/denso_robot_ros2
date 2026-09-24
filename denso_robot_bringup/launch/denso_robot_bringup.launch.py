@@ -594,6 +594,7 @@ def generate_launch_description():
             'camera_namespace': 'camera',
             'camera_name': 'camera',
             'align_depth.enable': 'true',
+            'publish_tf': 'false',
         }.items(),
         condition=UnlessCondition(sim)
     )
