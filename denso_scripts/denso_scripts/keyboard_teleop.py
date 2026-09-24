@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """
-denso_keyboard_teleop.py
-------------------------
-Controle do end-effector via MoveIt Servo — mapeamento direto em base_link.
-Movimento contínuo enquanto a tecla é mantida pressionada (usando
-repetição automática do teclado do SO + timeout de "tecla solta").
+keyboard_teleop.py
+------------------
+Controle do end-effector do Denso via MoveIt Servo (real e simulação).
+Movimento contínuo enquanto a tecla é mantida pressionada.
+
+Uso:
+    ros2 run denso_scripts keyboard_teleop
 """
 
 import sys
 import tty
 import termios
 import select
+import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
-import time
 
 
-LINEAR_SPEED   = 0.12
-ANGULAR_SPEED  = 0.4
-FRAME_ID       = 'base_link'
-PUBLISH_RATE   = 50.0   # Hz de publicação contínua
-KEY_TIMEOUT    = 0.15   # segundos sem receber a tecla = considera "soltou"
+LINEAR_SPEED      = 0.12
+ANGULAR_SPEED     = 0.4
+FRAME_ID          = 'base_link'
+PUBLISH_RATE      = 50.0   # Hz
+KEY_TIMEOUT_FIRST = 0.6    # tolera o atraso inicial da repetição do teclado
+KEY_TIMEOUT       = 0.15   # depois que a repetição começou
 
-# X e Y invertidos em relação à versão anterior (W/S agora é Y, A/D é X)
 KEY_BINDINGS = {
     'w': ( 0.0,           LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
     's': ( 0.0,          -LINEAR_SPEED,  0.0,           0.0,           0.0,           0.0),
@@ -39,29 +41,30 @@ KEY_BINDINGS = {
     'l': ( 0.0,           0.0,           0.0,           0.0,           0.0,          -ANGULAR_SPEED),
 }
 
-MENU = """
+MENU = f"""
 ╔══════════════════════════════════════╗
 ║    DENSO Keyboard Teleop (Servo)     ║
-║    Segure a tecla para mover          ║
+║    Segure a tecla para mover         ║
 ╠══════════════════════════════════════╣
-║  Translação:                         ║
-║    W / S  →  +Y / -Y                 ║
-║    A / D  →  +X / -X                 ║
-║    Q / E  →  +Z / -Z (cima/baixo)   ║
-║                                      ║
-║  Rotação:                            ║
-║    U / O  →  roll  +/-               ║
-║    I / K  →  pitch +/-               ║
-║    J / L  →  yaw   +/-               ║
-║                                      ║
-║  ESPAÇO   →  parar                   ║
-║  ESC/Ctrl+C → sair                   ║
+  lin={LINEAR_SPEED} | ang={ANGULAR_SPEED} | frame={FRAME_ID}
+
+  Translação:
+    W / S  →  +Y / -Y
+    A / D  →  +X / -X
+    Q / E  →  +Z / -Z
+
+  Rotação:
+    U / O  →  roll  +/-
+    I / K  →  pitch +/-
+    J / L  →  yaw   +/-
+
+  ESPAÇO     →  parar
+  ESC/Ctrl+C →  sair
 ╚══════════════════════════════════════╝
 """
 
 
 def get_key_nonblocking(settings, timeout):
-    """Lê uma tecla se disponível dentro de 'timeout' segundos; senão retorna None."""
     tty.setraw(sys.stdin.fileno())
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
     key = sys.stdin.read(1) if rlist else None
@@ -73,17 +76,16 @@ class KeyboardTeleop(Node):
 
     def __init__(self):
         super().__init__('denso_keyboard_teleop')
-        self._pub = self.create_publisher(
-            TwistStamped, '/servo_node/delta_twist_cmds', 10)
+        self._pub = self.create_publisher(TwistStamped, '/servo_node/delta_twist_cmds', 10)
         self.get_logger().info('Keyboard teleop iniciado (movimento contínuo).')
 
     def publish(self, lx, ly, lz, ax, ay, az):
         msg = TwistStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = FRAME_ID
-        msg.twist.linear.x  = lx
-        msg.twist.linear.y  = ly
-        msg.twist.linear.z  = lz
+        msg.twist.linear.x = lx
+        msg.twist.linear.y = ly
+        msg.twist.linear.z = lz
         msg.twist.angular.x = ax
         msg.twist.angular.y = ay
         msg.twist.angular.z = az
@@ -93,8 +95,8 @@ class KeyboardTeleop(Node):
         self.publish(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = KeyboardTeleop()
     settings = termios.tcgetattr(sys.stdin)
 
@@ -102,8 +104,11 @@ def main():
     print('Aguardando teclas...\n')
 
     period = 1.0 / PUBLISH_RATE
-    last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    zero = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    last_cmd = zero
+    last_key = None
     last_key_time = 0.0
+    first_key_time = 0.0
     moving = False
 
     try:
@@ -116,24 +121,32 @@ def main():
                     break
 
                 if key == ' ':
-                    last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                    last_cmd = zero
+                    last_key = None
                     moving = False
                     node.stop()
                     print('PARADO                    ', end='\r')
                 elif key in KEY_BINDINGS:
+                    now = time.time()
+                    if key != last_key or not moving:
+                        first_key_time = now
                     last_cmd = KEY_BINDINGS[key]
-                    last_key_time = time.time()
+                    last_key = key
+                    last_key_time = now
                     moving = True
                     print(f'Movendo: {key}                    ', end='\r')
 
-            # se estava se movendo mas a tecla parou de chegar (soltou) por muito tempo, para
-            if moving and (time.time() - last_key_time) > KEY_TIMEOUT:
-                moving = False
-                last_cmd = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                node.stop()
-                print('PARADO                    ', end='\r')
-            elif moving:
-                node.publish(*last_cmd)
+            if moving:
+                waiting_first_repeat = (last_key_time == first_key_time)
+                timeout = KEY_TIMEOUT_FIRST if waiting_first_repeat else KEY_TIMEOUT
+                if (time.time() - last_key_time) > timeout:
+                    moving = False
+                    last_key = None
+                    last_cmd = zero
+                    node.stop()
+                    print('PARADO                    ', end='\r')
+                else:
+                    node.publish(*last_cmd)
 
     except Exception as e:
         print(f'\nErro: {e}')
