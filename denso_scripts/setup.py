@@ -27,9 +27,9 @@ setup(
         'move_joints = denso_scripts.move_joints:main',
         'move_xyz = denso_scripts.move_xyz:main',
         'main = denso_scripts.main:main',
-        'keyboard_teleop = denso_scripts.keyboard_teleop:main',
+        'ibvs_controller_sim = denso_scripts.ibvs_controller_sim:main',
         'aruco_feature_extractor = denso_scripts.aruco_feature_extractor:main',
-        'ibvs_controller = denso_scripts.ibvs_controller:main',
-        'aruco_feature_extractor_real = denso_scripts.aruco_feature_extractor_real:main',    ],
+        'ibvs_controller_real = denso_scripts.ibvs_controller_real:main', 
+        'keyboard_teleop = denso_scripts.keyboard_teleop:main',      ],
 },
 )
