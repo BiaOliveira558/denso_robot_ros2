@@ -241,10 +241,10 @@ def generate_launch_description():
             'rpy', default_value='0 0 0',
             description='RPY position of arm'
         ))
-    declared_arguments.append(
-        DeclareLaunchArgument(
-            'aruco', default_value='true',
-            description='Launch ArUco feature extractor?'))
+    #declared_arguments.append(
+    #    DeclareLaunchArgument(
+    #        'aruco', default_value='true',
+    #        description='Launch ArUco feature extractor?'))
 
 # Initialize Arguments
     denso_robot_model = LaunchConfiguration('model')
@@ -279,7 +279,7 @@ def generate_launch_description():
     robot_controller = LaunchConfiguration('robot_controller')
     xyz = LaunchConfiguration('xyz')
     rpy = LaunchConfiguration('rpy')
-    aruco = LaunchConfiguration('aruco')
+    #aruco = LaunchConfiguration('aruco')
 
     denso_robot_core_pkg = get_package_share_directory('denso_robot_core')
 
@@ -558,29 +558,29 @@ def generate_launch_description():
         )
     )
 
-    aruco_extractor_sim = Node(
-        package='denso_scripts',
-        executable='aruco_feature_extractor',
-        name='aruco_feature_extractor',
-        output='screen',
-        parameters=[{
-            'image_topic': '/basic_camera',
-            'depth_topic': '/basic_camera/depth/image_raw',
-            'camera_info_topic': '/basic_camera/camera_info',
-            'use_sim_time': True,
-        }],
-        condition=IfCondition(PythonExpression(
-            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true' and '", aruco, "'.lower() == 'true'"]))
-    )
+    #aruco_extractor_sim = Node(
+    #    package='denso_scripts',
+    #    executable='aruco_feature_extractor',
+    #    name='aruco_feature_extractor',
+    #    output='screen',
+    #    parameters=[{
+    #        'image_topic': '/basic_camera',
+    #        'depth_topic': '/basic_camera/depth/image_raw',
+    #        'camera_info_topic': '/basic_camera/camera_info',
+    #        'use_sim_time': True,
+    #    }],
+    #    condition=IfCondition(PythonExpression(
+    #        ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true' and '", aruco, "'.lower() == 'true'"]))
+    #)
 
-    aruco_extractor_real = Node(
-        package='denso_scripts',
-        executable='aruco_feature_extractor',
-        name='aruco_feature_extractor',
-        output='screen',
-        condition=IfCondition(PythonExpression(
-            ["'", sim, "'.lower() == 'false' and '", aruco, "'.lower() == 'true'"]))
-    )
+    #aruco_extractor_real = Node(
+    #    package='denso_scripts',
+    #    executable='aruco_feature_extractor',
+    #    name='aruco_feature_extractor',
+    #    output='screen',
+    #    condition=IfCondition(PythonExpression(
+    #        ["'", sim, "'.lower() == 'false' and '", aruco, "'.lower() == 'true'"]))
+    #)
 
     realsense = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -612,8 +612,8 @@ def generate_launch_description():
         joint_state_broadcaster_spawner,
         servo_node,
         start_servo_after_controllers,
-        aruco_extractor_sim,
-        aruco_extractor_real,
+        #aruco_extractor_sim,
+        #aruco_extractor_real,
         realsense
     ]
 
