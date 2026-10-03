@@ -90,15 +90,19 @@
             </box>
           </geometry>
         </collision>
-        <visual name="aruco_marker">
-          <pose>0 0 0.041 0 0 0</pose>
-          <geometry>
-            <mesh>
-              <uri>/root/denso_ws/src/denso_robot_ros2/denso_robot_descriptions/models/aruco_marker.obj</uri>
-              <scale>2.0 2.0 1</scale>
-            </mesh>
-          </geometry>
-        </visual>
+        <!--
+
+          <visual name="aruco_marker">
+            <pose>0 0 0.041 0 0 0</pose>
+            <geometry>
+              <mesh>
+                <uri>/root/denso_ws/src/denso_robot_ros2/denso_robot_descriptions/models/aruco_marker.obj</uri>
+                <scale>2.0 2.0 1</scale>
+              </mesh>
+            </geometry>
+          </visual>
+
+         --> 
       </link>
     </model>
 
