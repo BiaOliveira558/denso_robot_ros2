@@ -30,6 +30,8 @@ setup(
         'ibvs_controller_sim = denso_scripts.ibvs_controller_sim:main',
         'aruco_feature_extractor = denso_scripts.aruco_feature_extractor:main',
         'ibvs_controller_real = denso_scripts.ibvs_controller_real:main', 
-        'keyboard_teleop = denso_scripts.keyboard_teleop:main',      ],
+        'keyboard_teleop = denso_scripts.keyboard_teleop:main',
+        'ibvs_xfeat_controller_sim = denso_scripts.ibvs_xfeat_controller_sim:main',
+        'xfeat_feature_extractor = denso_scripts.xfeat_feature_extractor:main',           ],
 },
 )

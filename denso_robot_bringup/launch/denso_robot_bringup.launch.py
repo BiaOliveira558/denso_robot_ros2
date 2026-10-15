@@ -241,6 +241,10 @@ def generate_launch_description():
             'rpy', default_value='0 0 0',
             description='RPY position of arm'
         ))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'xfeat', default_value='true',
+            description='Launch XFeat feature extractor?'))
     #declared_arguments.append(
     #    DeclareLaunchArgument(
     #        'aruco', default_value='true',
@@ -279,6 +283,7 @@ def generate_launch_description():
     robot_controller = LaunchConfiguration('robot_controller')
     xyz = LaunchConfiguration('xyz')
     rpy = LaunchConfiguration('rpy')
+    xfeat = LaunchConfiguration('xfeat')
     #aruco = LaunchConfiguration('aruco')
 
     denso_robot_core_pkg = get_package_share_directory('denso_robot_core')
@@ -558,6 +563,39 @@ def generate_launch_description():
         )
     )
 
+# --------- XFeat Feature Extractor ---------
+    xfeat_extractor_sim = Node(
+        package='denso_scripts',
+        executable='xfeat_feature_extractor',
+        name='xfeat_feature_extractor',
+        output='screen',
+        emulate_tty=True,
+        additional_env={'DISPLAY': os.environ.get('DISPLAY', ':0')},
+        parameters=[{
+            'rgb_topic': '/basic_camera',
+            'depth_topic': '/basic_camera/depth/image_raw',
+            'info_topic': '/basic_camera/camera_info',
+            'mostrar_janela': True,
+        }],
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true' and '", xfeat, "'.lower() == 'true'"]))
+    )
+
+    xfeat_extractor_real = Node(
+        package='denso_scripts',
+        executable='xfeat_feature_extractor',
+        name='xfeat_feature_extractor',
+        output='screen',
+        parameters=[{
+            'image_topic': '/camera/camera/color/image_raw',
+            'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
+            'camera_info_topic': '/camera/camera/color/camera_info',
+            'use_sim_time': False,
+        }],
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "'.lower() == 'false' and '", xfeat, "'.lower() == 'true'"]))
+    )
+
     #aruco_extractor_sim = Node(
     #    package='denso_scripts',
     #    executable='aruco_feature_extractor',
@@ -612,6 +650,8 @@ def generate_launch_description():
         joint_state_broadcaster_spawner,
         servo_node,
         start_servo_after_controllers,
+        xfeat_extractor_sim,
+        xfeat_extractor_real,
         #aruco_extractor_sim,
         #aruco_extractor_real,
         realsense
