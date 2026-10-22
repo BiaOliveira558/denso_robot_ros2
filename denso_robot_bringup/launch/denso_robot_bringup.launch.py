@@ -244,7 +244,11 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             'xfeat', default_value='true',
-            description='Launch XFeat feature extractor?'))
+            description='Launch XFeat feature extractor? (modo sim/real definido por sim)'))
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'xfeat_window', default_value='true',
+            description='Mostrar janela OpenCV do XFeat?'))
     #declared_arguments.append(
     #    DeclareLaunchArgument(
     #        'aruco', default_value='true',
@@ -284,7 +288,11 @@ def generate_launch_description():
     xyz = LaunchConfiguration('xyz')
     rpy = LaunchConfiguration('rpy')
     xfeat = LaunchConfiguration('xfeat')
+    xfeat_window = LaunchConfiguration('xfeat_window')
     #aruco = LaunchConfiguration('aruco')
+
+    # use_sim_time como bool de verdade (o LaunchConfiguration chega como string)
+    use_sim_time = ParameterValue(sim, value_type=bool)
 
     denso_robot_core_pkg = get_package_share_directory('denso_robot_core')
 
@@ -418,7 +426,7 @@ def generate_launch_description():
             moveit_controllers_file,
             occupancy_map_monitor_parameters,
             planning_scene_monitor_parameters,
-            {'use_sim_time': sim}
+            {'use_sim_time': use_sim_time}
         ])
 
 # --------- Robot Control Node (only if 'sim:=false') ---------
@@ -446,7 +454,7 @@ def generate_launch_description():
         package='robot_state_publisher',
         executable='robot_state_publisher',
         output='both',
-        parameters=[{'use_sim_time': sim}, robot_description]
+        parameters=[{'use_sim_time': use_sim_time}, robot_description]
     )
 
     joint_state_broadcaster_spawner = Node(
@@ -475,7 +483,7 @@ def generate_launch_description():
             robot_description_semantic,
             ompl_planning_pipeline_config,
             robot_description_kinematics,
-            {'use_sim_time': sim}
+            {'use_sim_time': use_sim_time}
         ])
 
 # --------- Gazebo Nodes (only if 'sim:=true') ---------
@@ -506,6 +514,16 @@ def generate_launch_description():
         condition=IfCondition(sim),
         arguments=['-topic', 'robot_description', '-name', denso_robot_model],
         output='screen')
+
+    # Relógio do Gazebo -> /clock no ROS (necessário para use_sim_time:=true funcionar)
+    ros_gz_clock_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='clock_bridge',
+        arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        output='screen',
+        condition=IfCondition(sim)
+    )
 
     #Node necessary to connect camera in gazebo to ROS topic
     ros_gz_image_bridge = Node(
@@ -545,7 +563,7 @@ def generate_launch_description():
             robot_description,
             robot_description_semantic,
             robot_description_kinematics,
-            {'use_sim_time': sim}
+            {'use_sim_time': use_sim_time}
         ],
         output='screen',
     )
@@ -563,8 +581,11 @@ def generate_launch_description():
         )
     )
 
-# --------- XFeat Feature Extractor ---------
-    xfeat_extractor_sim = Node(
+# --------- XFeat Feature Extractor (um nó só; 'sim' decide o modo) ---------
+    # sim:=true  -> tópicos /basic_camera, goal ~/xfeat_goal, callbacks separados
+    # sim:=false -> tópicos /camera/camera/..., goal ~/xfeat_goal_real, sync RGB-D
+    # use_sim_time = False: o timer roda em tempo real; os stamps publicados vêm do header da imagem
+    xfeat_extractor = Node(
         package='denso_scripts',
         executable='xfeat_feature_extractor',
         name='xfeat_feature_extractor',
@@ -572,28 +593,18 @@ def generate_launch_description():
         emulate_tty=True,
         additional_env={'DISPLAY': os.environ.get('DISPLAY', ':0')},
         parameters=[{
-            'rgb_topic': '/basic_camera',
-            'depth_topic': '/basic_camera/depth/image_raw',
-            'info_topic': '/basic_camera/camera_info',
-            'mostrar_janela': True,
-        }],
-        condition=IfCondition(PythonExpression(
-            ["'", sim, "'.lower() == 'true' and '", basic_camera, "'.lower() == 'true' and '", xfeat, "'.lower() == 'true'"]))
-    )
-
-    xfeat_extractor_real = Node(
-        package='denso_scripts',
-        executable='xfeat_feature_extractor',
-        name='xfeat_feature_extractor',
-        output='screen',
-        parameters=[{
-            'image_topic': '/camera/camera/color/image_raw',
-            'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
-            'camera_info_topic': '/camera/camera/color/camera_info',
+            'sim': ParameterValue(sim, value_type=bool),
             'use_sim_time': False,
+            'mostrar_janela': ParameterValue(xfeat_window, value_type=bool),
+            'escalas': [1.0, 0.7, 0.5, 0.35, 0.25],
+            'angulos': [0.0, -25.0, 25.0],
+            'raio_nms': 20.0,
         }],
-        condition=IfCondition(PythonExpression(
-            ["'", sim, "'.lower() == 'false' and '", xfeat, "'.lower() == 'true'"]))
+        # sim: precisa da câmera do Gazebo (basic_camera) | real: basta xfeat:=true
+        condition=IfCondition(PythonExpression([
+            "'", xfeat, "'.lower() == 'true' and ('", sim, "'.lower() == 'false' or '",
+            basic_camera, "'.lower() == 'true')"
+        ]))
     )
 
     #aruco_extractor_sim = Node(
@@ -620,6 +631,7 @@ def generate_launch_description():
     #        ["'", sim, "'.lower() == 'false' and '", aruco, "'.lower() == 'true'"]))
     #)
 
+# --------- RealSense D405 (only if 'sim:=false') ---------
     realsense = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -644,14 +656,14 @@ def generate_launch_description():
         rviz_node,
         gazebo,
         spawn_entity,
+        ros_gz_clock_bridge,
         ros_gz_image_bridge,
         ros_gz_camera_info_bridge,
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
         servo_node,
         start_servo_after_controllers,
-        xfeat_extractor_sim,
-        xfeat_extractor_real,
+        xfeat_extractor,
         #aruco_extractor_sim,
         #aruco_extractor_real,
         realsense
