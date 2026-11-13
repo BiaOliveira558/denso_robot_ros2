@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'denso_scripts'
@@ -10,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,10 +35,11 @@ setup(
             'ibvs_controller_real = denso_scripts.ibvs_controller_real:main',
             'keyboard_teleop = denso_scripts.keyboard_teleop:main',
             'ibvs_xfeat_controller_sim = denso_scripts.ibvs_xfeat_controller_sim:main',
-            'ibvs_xfeat_controller_real = denso_scripts.ibvs_xfeat_controller_sim:main',
+            'ibvs_xfeat_controller_real = denso_scripts.ibvs_xfeat_controller_real:main',
             'xfeat_feature_extractor_sim = denso_scripts.xfeat_feature_extractor_sim:main',
             'xfeat_feature_extractor_real = denso_scripts.xfeat_feature_extractor_real:main',
             'xfeat_feature_extractor = denso_scripts.xfeat_feature_extractor:main',
+            'ibvs_xfeat_logger = denso_scripts.ibvs_xfeat_logger:main',
         ],
     },
 )

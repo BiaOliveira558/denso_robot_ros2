@@ -1,38 +1,43 @@
 #!/usr/bin/env python3
 """
 Extrator XFeat + KLT para IBVS (simulação Gazebo OU câmera real RealSense D405),
-com banco multi-escala / multi-rotação da goal, TABELA DE TRACKS, 6 ATIVOS ponderados e espalhados,
-ERRO DE CONVERGÊNCIA (RMS ponderado, igual ao do controlador) e MEDIÇÃO DE TEMPO por etapa.
+com banco multi-escala / multi-rotação da goal, TABELA DE TRACKS, ATIVOS ponderados e espalhados,
+ERRO DE CONVERGÊNCIA (RMS ponderado, igual ao do controlador), MEDIÇÃO DE TEMPO por etapa
+e DIAGNÓSTICO por frame para coleta (/ibvs/xfeat_debug).
+
+Versões (mesmo código, só parâmetros):
+  v1: n_ativos=6 grade=0                         z_tol_rel=0    z_salto_max=0
+  v2: n_ativos=6 grade=4 grade_objeto=false      z_tol_rel=0.25 z_salto_max=0.30
+  v3: n_ativos=6 grade=3 grade_objeto=true       z_tol_rel=0.15 z_salto_max=0.30
+
+  grade        : escolha dos IDs da goal por células de uma grade g x g (0 = só score)
+  grade_objeto : True = grade sobre a região do objeto | False = grade sobre a imagem inteira
+  z_tol_rel    : na goal, descarta keypoints com Z* longe do Z típico do objeto (0 = desligado)
+  z_salto_max  : no run, ignora saltos de Z entre frames maiores que essa fração (0 = desligado)
+  mostrar_grade: desenha a grade usada na escolha dos IDs no lado GOAL da janela
 
 O parâmetro 'sim' (vindo do launch) escolhe os defaults:
   sim = True  -> tópicos /basic_camera, goal em ~/xfeat_goal, z 0.05-2.0 m, callbacks separados
-  sim = False -> tópicos /camera/camera/..., goal em ~/xfeat_goal_real, z 0.07-0.6 m, sync RGB-D
+  sim = False -> tópicos /camera/camera/..., goal em ~/xfeat_ibvs_logs/goal, z 0.07-0.6 m, sync RGB-D
 
 Publica em /ibvs/xfeat_features (Float64MultiArray), só os ATIVOS (e os que estão ENTRANDO):
-  formato_ponderado = False (compatível com o controlador antigo):
-    [N, detectado, stamp_sec, stamp_nanosec,  x1, y1, z1, x1*, y1*, z1*,  ...]
-  formato_ponderado = True:
+  formato_ponderado = True (padrão):
     [N, detectado, stamp_sec, stamp_nanosec,  id1, x1, y1, z1, x1*, y1*, z1*, w1,  ...]
+  formato_ponderado = False (controlador antigo):
+    [N, detectado, stamp_sec, stamp_nanosec,  x1, y1, z1, x1*, y1*, z1*,  ...]
 
-Pipeline:
-  Goal  : os n_pontos de maior score viram IDs fixos 0..n-1 (raio_nms evita IDs amontoados).
-          Banco multi-escala/multi-rotação com descritores de cada ID (+ keypoints extras p/ RANSAC).
-          Tabela de tracks: uma linha por ID (score, Z*, status, idade, Z atual, peso).
-  Frame : KLT rastreia cada ID (checagem ida-e-volta). ID perdido -> PERDIDO.
-  XFeat : só repõe IDs quando há menos de min_rastreados (com intervalo mínimo); reposto -> RESERVA idade 0.
-  Ativos: com n_ativos elegíveis (rastreado, idade >= idade_min, Z válido), escolhe os ativos por
-          espalhamento (o 1º é o de maior score; cada próximo é o mais distante dos já escolhidos,
-          com o score como desempate). Entram com w = 1.
-          Depois disso o conjunto só muda quando um ativo é perdido: o elegível mais distante dos
-          ativos que ficaram entra (ENTRANDO), com w subindo de 0 a 1 em ramp_frames.
-  Erro  : RMS ponderado em coordenadas normalizadas; CONVERGIU quando rms < convergence_threshold
-          com todos os ativos em w = 1 por convergence_frames frames seguidos.
-  Tempo : a cada log_tempo_every frames imprime média/máximo (ms) de cada etapa.
+Publica em /ibvs/xfeat_debug (25 valores + 6 por ID):
+  [frame, stamp_sec, stamp_nsec, intervalo_ms, idade_ms, t_total_ms, t_klt_ms, t_xfeat_ms,
+   xfeat_rodou, n_matches, n_inliers, n_repostos, n_rastreados, n_elegiveis, n_ativos,
+   soma_w, dist_min_px, rms, perdas_ativo, entradas,
+   n_keypoints_xfeat, n_rastreados_antes, n_mantidos, n_perdidos_klt, ativos_mudaram]
+  + por ID: [status, idade, u, v, w, e_px]
 
 Teclas na janela: g = definir goal | q = sair
 """
 import os
 import sys
+import csv
 import time
 import cv2
 import numpy as np
@@ -62,7 +67,7 @@ DEFAULTS = {
         'rgb_topic': '/camera/camera/color/image_raw',
         'depth_topic': '/camera/camera/aligned_depth_to_color/image_raw',
         'info_topic': '/camera/camera/color/camera_info',
-        'goal_dir': os.path.expanduser('~/xfeat_goal_real'),
+        'goal_dir': os.path.expanduser('~/xfeat_ibvs_logs/goal'),
         'z_min': 0.07,
         'z_max': 0.6,
         'janela': 'XFeat + KLT feature extractor (real)',
@@ -95,6 +100,39 @@ def top_n_pontos(pts, scores, n, raio):
     return np.array(escolhidos, dtype=int)
 
 
+def top_n_grade(pts, scores, n, raio, shape, g, sobre_objeto=True):
+    """n pontos espalhados por uma grade g x g.
+    sobre_objeto=True : grade sobre o retângulo ocupado pelos candidatos (o objeto)
+    sobre_objeto=False: grade sobre a imagem inteira (versão v2)
+    Melhor score de cada célula primeiro, respeitando a distância mínima 'raio'."""
+    if sobre_objeto:
+        x0, y0 = pts.min(axis=0)
+        x1, y1 = pts.max(axis=0)
+    else:
+        x0, y0 = 0.0, 0.0
+        x1, y1 = float(shape[1]), float(shape[0])
+    w = max(float(x1 - x0), 1e-6)
+    h = max(float(y1 - y0), 1e-6)
+    cx = np.clip(((pts[:, 0] - x0) / w * g).astype(int), 0, g - 1)
+    cy = np.clip(((pts[:, 1] - y0) / h * g).astype(int), 0, g - 1)
+    cel = cy * g + cx
+    filas = {}
+    for i in np.argsort(-scores):
+        filas.setdefault(int(cel[i]), []).append(i)
+    escolhidos = []
+    while len(escolhidos) < n and any(filas.values()):
+        for c in list(filas):
+            while filas[c]:
+                i = filas[c].pop(0)
+                if not escolhidos or raio <= 0 or \
+                        np.min(np.linalg.norm(pts[escolhidos] - pts[i], axis=1)) >= raio:
+                    escolhidos.append(i)
+                    break
+            if len(escolhidos) == n:
+                break
+    return np.array(escolhidos, dtype=int)
+
+
 class XFeatKLTExtractor(Node):
     def __init__(self):
         super().__init__('xfeat_feature_extractor')
@@ -109,11 +147,17 @@ class XFeatKLTExtractor(Node):
         self.declare_parameter('depth_topic', d['depth_topic'])
         self.declare_parameter('info_topic', d['info_topic'])
         self.declare_parameter('features_topic', '/ibvs/xfeat_features')
+        self.declare_parameter('debug_topic', '/ibvs/xfeat_debug')
         self.declare_parameter('xfeat_path', os.path.expanduser('~/accelerated_features'))
         self.declare_parameter('goal_dir', d['goal_dir'])
         self.declare_parameter('top_k', 2048)          # keypoints do XFeat no frame atual e na goal original
         self.declare_parameter('n_pontos', 20)         # IDs fixos escolhidos na goal
         self.declare_parameter('raio_nms', 20.0)       # px entre IDs na goal (0 = só score)
+        # ---- Correções (espalhamento e profundidade) — configuração final (v2) ----
+        self.declare_parameter('grade', 4)              # grade 4x4 na escolha dos IDs
+        self.declare_parameter('grade_objeto', True)   # grade sobre a IMAGEM inteira
+        self.declare_parameter('z_tol_rel', 0.25)       # descarta na goal Z* > 25% longe do Z típico
+        self.declare_parameter('z_salto_max', 0.30)     # no run, rejeita saltos de Z > 30% entre frames
         # ---- Banco multi-escala / multi-rotação ----
         self.declare_parameter('escalas', [1.0, 0.7, 0.5, 0.35, 0.25])
         self.declare_parameter('angulos', [0.0, -25.0, 25.0])   # graus
@@ -130,12 +174,12 @@ class XFeatKLTExtractor(Node):
         self.declare_parameter('ramp_frames', 15)      # frames para o peso do substituto ir de 0 a 1
         self.declare_parameter('min_soma_w', 4.0)      # abaixo disso publica detectado = 0
         self.declare_parameter('peso_score', 20.0)     # px por unidade de score no desempate do espalhamento
-        self.declare_parameter('formato_ponderado', False)  # True: publica id e w por ponto
+        self.declare_parameter('formato_ponderado', True)   # True: publica id e w por ponto
         # ---- Convergência (mesmos valores do controlador) ----
-        self.declare_parameter('convergence_threshold', 0.025)
-        self.declare_parameter('convergence_frames', 10)
+        self.declare_parameter('convergence_threshold', 0.035)
+        self.declare_parameter('convergence_frames', 5)
         # ---------------------------------------------
-        self.declare_parameter('rate', 15.0)
+        self.declare_parameter('rate', 30.0)
         self.declare_parameter('max_dim', 640)
         self.declare_parameter('min_cossim', 0.82)
         self.declare_parameter('ransac_px', 2.0)
@@ -147,14 +191,19 @@ class XFeatKLTExtractor(Node):
         self.declare_parameter('z_min', d['z_min'])
         self.declare_parameter('z_max', d['z_max'])
         self.declare_parameter('mostrar_janela', True)
+        self.declare_parameter('mostrar_grade', True)   # desenha a grade da escolha dos IDs no lado GOAL
         self.declare_parameter('log_terminal', True)
-        self.declare_parameter('log_tabela_every', 15)  # imprime a tabela a cada N frames (0 = nunca)
+        self.declare_parameter('log_tabela_every', 30)   # imprime a tabela a cada N frames (0 = nunca)
         self.declare_parameter('log_tempo_every', 30)   # imprime o resumo de tempos a cada N frames (0 = nunca)
         gp = lambda n: self.get_parameter(n).value
 
         self.top_k = gp('top_k')
         self.n_pontos = gp('n_pontos')
         self.raio_nms = float(gp('raio_nms'))
+        self.grade = int(gp('grade'))
+        self.grade_objeto = bool(gp('grade_objeto'))
+        self.z_tol_rel = float(gp('z_tol_rel'))
+        self.z_salto_max = float(gp('z_salto_max'))
         self.escalas = [float(s) for s in gp('escalas')]
         self.angulos = [float(a) for a in gp('angulos')]
         self.top_k_nivel = int(gp('top_k_nivel'))
@@ -182,6 +231,7 @@ class XFeatKLTExtractor(Node):
         self.z_min, self.z_max = float(gp('z_min')), float(gp('z_max'))
         self.goal_dir = gp('goal_dir')
         self.mostrar = gp('mostrar_janela')
+        self.mostrar_grade = bool(gp('mostrar_grade'))
         self.log_terminal = gp('log_terminal')
         self.log_tabela_every = int(gp('log_tabela_every'))
         self.log_tempo_every = int(gp('log_tempo_every'))
@@ -206,6 +256,8 @@ class XFeatKLTExtractor(Node):
         self.encoding_logado = False
         self.n_frame = 0
         self.ultima_versao = '-'
+        self._dbg = None
+        self._ult_n_kp = 0
         # ---- Medição de tempo ----
         self.tempos = {}                   # nome -> lista de ms
         self.t_ultimo_frame = None         # perf_counter do último frame processado
@@ -221,7 +273,7 @@ class XFeatKLTExtractor(Node):
             depth = np.load(depth_path) if os.path.exists(depth_path) else None
             self.definir_goal(cv2.imread(rgb_path), depth, salvar=False)
         else:
-            self.get_logger().warn('Sem goal salva: posicione o robo e aperte g na janela')
+            self.get_logger().warn(f'Sem goal salva em {self.goal_dir}: posicione o robo e aperte g na janela')
 
         # ---- ROS ----
         if self.sim:
@@ -235,6 +287,7 @@ class XFeatKLTExtractor(Node):
             self.sync.registerCallback(self.rgbd_cb)
         self.create_subscription(CameraInfo, gp('info_topic'), self.info_cb, 10)
         self.pub = self.create_publisher(Float64MultiArray, gp('features_topic'), 10)
+        self.pub_dbg = self.create_publisher(Float64MultiArray, gp('debug_topic'), 50)
         self.create_timer(1.0 / gp('rate'), self.processar,
                           clock=Clock(clock_type=ClockType.STEADY_TIME))
 
@@ -245,6 +298,8 @@ class XFeatKLTExtractor(Node):
         self.get_logger().info(
             f'XFeat+KLT iniciado [{"SIM" if self.sim else "REAL"}] ({self.xfeat.dev}) | '
             f'rgb={gp("rgb_topic")} | goal_dir={self.goal_dir} | n_pontos={self.n_pontos} | '
+            f'grade={self.grade} ({"objeto" if self.grade_objeto else "imagem"}) | '
+            f'z_tol_rel={self.z_tol_rel} | z_salto_max={self.z_salto_max} | '
             f'n_ativos={self.n_ativos} | idade_min={self.idade_min} | ramp={self.ramp_frames} | '
             f'peso_score={self.peso_score} | formato_ponderado={self.formato_ponderado} | '
             f'limiar={self.conv_thr} ({self.conv_frames} frames) | rate={gp("rate")} Hz | '
@@ -386,29 +441,76 @@ class XFeatKLTExtractor(Node):
     def definir_goal(self, img, depth, salvar=True):
         t0 = time.time()
         kp, desc, scores = self.extrair(img)
-        sel = top_n_pontos(kp, scores, self.n_pontos, self.raio_nms)
+
+        # 1) filtro de profundidade dos candidatos (remove pontos no fundo / borda)
+        if depth is not None:
+            z_kp = self.amostrar_z(depth, kp, img.shape)
+            ok = z_kp > 0
+            n_sem_z = int((~ok).sum())
+            z_ref = float('nan')
+            if self.z_tol_rel > 0 and ok.any():
+                top = np.argsort(-scores)[:50]
+                top = top[ok[top]]
+                if len(top):
+                    z_ref = float(np.median(z_kp[top]))       # Z típico do objeto (pontos mais fortes)
+                    ok &= np.abs(z_kp - z_ref) <= self.z_tol_rel * z_ref
+        else:
+            z_kp = np.zeros(len(kp))
+            ok = np.ones(len(kp), dtype=bool)
+            n_sem_z, z_ref = len(kp), float('nan')
+            self.get_logger().warn('Goal SEM profundidade: filtro de Z desligado')
+        cand = np.where(ok)[0]
+
+        # 2) escolha dos IDs entre os candidatos (grade sobre objeto/imagem, ou só score)
+        grade_bbox = None
+        if self.grade > 0 and len(cand) > 0:
+            s_loc = top_n_grade(kp[cand], scores[cand], self.n_pontos, self.raio_nms, img.shape,
+                                self.grade, self.grade_objeto)
+            # mesmos limites usados dentro de top_n_grade (para desenhar a grade na janela)
+            if self.grade_objeto:
+                x0, y0 = kp[cand].min(axis=0)
+                x1, y1 = kp[cand].max(axis=0)
+            else:
+                x0, y0 = 0.0, 0.0
+                x1, y1 = float(img.shape[1]), float(img.shape[0])
+            grade_bbox = (float(x0), float(y0), float(x1), float(y1))
+        else:
+            s_loc = top_n_pontos(kp[cand], scores[cand], self.n_pontos, self.raio_nms)
+        sel = cand[s_loc]
         pts_id = kp[sel].astype(np.float32)
-        zs_id = self.amostrar_z(depth, pts_id, img.shape)    # Z* de cada ID (0 = inválido)
+        zs_id = z_kp[sel]
 
         self.goal = {'img': img.copy(), 'pts_id': pts_id,
                      'score': scores[sel].astype(np.float64),
                      'zs': zs_id,
+                     'grade_bbox': grade_bbox,
                      'depth': None if depth is None else depth.copy()}
         self.n_ids = len(sel)
         self.banco = self.construir_banco(img, pts_id)
         self.resetar_rastreio()      # monta a tabela de tracks (todos perdidos; sem Z* = descartado)
 
+        os.makedirs(self.goal_dir, exist_ok=True)
         if salvar:
             cv2.imwrite(os.path.join(self.goal_dir, 'rgb.png'), img)
             if depth is not None:
                 np.save(os.path.join(self.goal_dir, 'depth.npy'), depth)
+            self.get_logger().info(f'Goal salva em {self.goal_dir}')
+        # goal_ids.csv sempre reflete os IDs em uso (muda com grade / filtro de Z)
+        with open(os.path.join(self.goal_dir, 'goal_ids.csv'), 'w', newline='') as f:
+            wr = csv.writer(f)
+            wr.writerow(['id', 'u', 'v', 'score', 'z_star'])
+            for i in range(self.n_ids):
+                wr.writerow([i, f'{pts_id[i, 0]:.3f}', f'{pts_id[i, 1]:.3f}',
+                             f'{self.goal["score"][i]:.4f}', f'{zs_id[i]:.4f}'])
 
         n_banco = 0 if self.banco is None else len(self.banco['id'])
         n_id_rows = 0 if self.banco is None else int((self.banco['id'] >= 0).sum())
+        onde = 'objeto' if self.grade_objeto else 'imagem'
         self.get_logger().info(
-            f'Goal definida: IDs fixos {self.n_ids} | versoes {len(self.versoes)} '
-            f'(escalas x angulos) | banco {n_banco} descritores ({n_id_rows} de IDs) | '
-            f'{"COM" if depth is not None else "SEM"} profundidade | {time.time() - t0:.1f} s')
+            f'Goal definida: IDs fixos {self.n_ids} | grade {self.grade} (sobre {onde}) | '
+            f'filtro Z: ref {z_ref:.3f} m, tol {self.z_tol_rel:.0%}, candidatos {len(cand)}/{len(kp)} '
+            f'(sem Z {n_sem_z}) | versoes {len(self.versoes)} | banco {n_banco} ({n_id_rows} de IDs) | '
+            f'{time.time() - t0:.1f} s')
         sem_z = np.where(zs_id <= 0)[0]
         if len(sem_z):
             self.get_logger().warn(f'IDs sem Z* valido (descartados): {sem_z.tolist()}')
@@ -436,6 +538,7 @@ class XFeatKLTExtractor(Node):
         if self.banco is None:
             return achados, 0, 0
         kp, desc, _ = self.extrair(img)
+        self._ult_n_kp = len(kp)
         ib, ic, sv = self.casar(desc)
         if len(ib) < 8:
             return achados, len(ib), 0
@@ -469,6 +572,7 @@ class XFeatKLTExtractor(Node):
         self.trk_status = np.full(n, PERDIDO, dtype=int)
         self.trk_idade = np.zeros(n, dtype=int)             # frames desde a (re)aquisição
         self.trk_z = np.zeros(n)                            # último Z válido no frame atual (0 = nunca)
+        self.trk_zrej = np.zeros(n, dtype=int)              # frames seguidos com salto de Z rejeitado
         self.trk_w = np.zeros(n)                            # peso no controle
         if self.goal is not None:
             self.trk_status[self.goal['zs'] <= 0] = DESCARTADO
@@ -478,6 +582,8 @@ class XFeatKLTExtractor(Node):
         # ---- convergência ----
         self.conv_count = 0
         self.convergiu_logado = False
+        # ---- diagnóstico ----
+        self._ativos_ant = None
 
     def rastrear_klt(self, gray):
         idx = np.where(self.trk_ok)[0]
@@ -491,6 +597,10 @@ class XFeatKLTExtractor(Node):
         p1 = p1.reshape(-1, 2)
         dentro = (p1[:, 0] >= 0) & (p1[:, 0] < w) & (p1[:, 1] >= 0) & (p1[:, 1] < h)
         ok = (st1.ravel() == 1) & (st2.ravel() == 1) & (fb < self.klt_fb_px) & dentro
+        if self._dbg is not None:
+            self._dbg['n_antes'] = int(len(idx))
+            self._dbg['mantidos'] = int(ok.sum())
+            self._dbg['perdidos_klt'] = int((~ok).sum())
 
         # quem continua: posição e idade
         seg = idx[ok]
@@ -504,10 +614,13 @@ class XFeatKLTExtractor(Node):
                 self.get_logger().warn(
                     f'>>> frame {self.n_frame} | ID {i} PERDIDO pelo KLT '
                     f'(era {NOME_STATUS[int(self.trk_status[i])]}, w={self.trk_w[i]:.2f})')
+                if self._dbg is not None:
+                    self._dbg['perdas_ativo'] += 1
         self.trk_ok[perd] = False
         self.trk_status[perd] = PERDIDO
         self.trk_idade[perd] = 0
         self.trk_z[perd] = 0.0
+        self.trk_zrej[perd] = 0
         self.trk_w[perd] = 0.0
 
     # ================================================================== ativos
@@ -555,7 +668,11 @@ class XFeatKLTExtractor(Node):
                 self.get_logger().warn(
                     f'>>> frame {self.n_frame} | ATIVOS INICIAIS (w=1): {ini.tolist()} | '
                     f'scores {[round(float(score[i]), 3) for i in ini]} | '
+                    f'Z* {[round(float(self.goal["zs"][i]), 3) for i in ini]} | '
                     f'dist min entre eles {self.dist_min(ini):.0f} px')
+            else:
+                self.get_logger().info(
+                    f'aguardando ativos: {len(cand)}/{self.n_ativos} elegiveis', throttle_duration_sec=2.0)
             return
 
         # 2. Rampa de quem está entrando
@@ -573,6 +690,8 @@ class XFeatKLTExtractor(Node):
             for i in self.escolher_espalhados(cand, em_campo, faltam):
                 self.trk_status[i] = ENTRANDO
                 self.trk_w[i] = 0.0
+                if self._dbg is not None:
+                    self._dbg['entradas'] += 1
                 d = np.min(np.linalg.norm(self.trk_pts[em_campo] - self.trk_pts[i], axis=1)) \
                     if len(em_campo) else 0.0
                 self.get_logger().warn(
@@ -624,6 +743,40 @@ class XFeatKLTExtractor(Node):
         msg.data = dados
         self.pub.publish(msg)
 
+    def publicar_debug(self, intervalo_ms):
+        """Diagnóstico por frame em /ibvs/xfeat_debug (layout no cabeçalho do arquivo)."""
+        if self.goal is None or self._dbg is None:
+            return
+        d = self._dbg
+        nan = float('nan')
+        tot = self.tempos['total'][-1] if self.tempos.get('total') else nan
+        n_eleg = int(((self.trk_status == RESERVA) & (self.trk_idade >= self.idade_min) &
+                      (self.trk_z > 0)).sum())
+        ativos = tuple(np.where(np.isin(self.trk_status, [ATIVO, ENTRANDO]))[0].tolist())
+        mudou = 1.0 if (self._ativos_ant is not None and ativos != self._ativos_ant) else 0.0
+        self._ativos_ant = ativos
+        dados = [float(self.n_frame), float(d['stamp'].sec), float(d['stamp'].nanosec),
+                 float(intervalo_ms), float(d['idade']), float(tot),
+                 float(d['t_klt']), float(d['t_xfeat']), float(d['xfeat']),
+                 float(d['n_m']), float(d['n_in']), float(d['rep']),
+                 float(self.trk_ok.sum()), float(n_eleg), float(len(ativos)),
+                 float(d['soma_w']), float(d['dmin']), float(d['rms']),
+                 float(d['perdas_ativo']), float(d['entradas']),
+                 float(d['n_kp']), float(d['n_antes']), float(d['mantidos']),
+                 float(d['perdidos_klt']), mudou]
+        for i in range(self.n_ids):
+            if self.trk_ok[i]:
+                u, v = float(self.trk_pts[i, 0]), float(self.trk_pts[i, 1])
+                epx = float(np.linalg.norm(self.trk_pts[i] - self.goal['pts_id'][i]))
+            else:
+                u = v = epx = nan
+            dados += [float(self.trk_status[i]), float(self.trk_idade[i]), u, v,
+                      float(self.trk_w[i]), epx]
+        msg = Float64MultiArray()
+        msg.data = dados
+        self.pub_dbg.publish(msg)
+        self._dbg = None
+
     # ---- medição de tempo ----
     def marcar(self, nome, t0):
         """Guarda o tempo (ms) desde t0 com o nome dado e devolve o instante atual."""
@@ -653,13 +806,16 @@ class XFeatKLTExtractor(Node):
             self.teclado()
             return
         t_ini = time.perf_counter()
+        intervalo = float('nan')
         if self.t_ultimo_frame is not None:
-            self.tempos.setdefault('intervalo', []).append((t_ini - self.t_ultimo_frame) * 1000.0)
+            intervalo = (t_ini - self.t_ultimo_frame) * 1000.0
+            self.tempos.setdefault('intervalo', []).append(intervalo)
         self.t_ultimo_frame = t_ini
 
         self.processar_frame(t_ini)
 
         self.marcar('total', t_ini)
+        self.publicar_debug(intervalo)
         if (self.log_tempo_every > 0 and self.n_frame > 0 and
                 self.n_frame % self.log_tempo_every == 0 and self.n_frame != self.ultimo_resumo):
             self.ultimo_resumo = self.n_frame
@@ -672,6 +828,11 @@ class XFeatKLTExtractor(Node):
         depth_atual = None if self.depth is None else self.depth.copy()
         idade = (self.get_clock().now() - Time.from_msg(stamp)).nanoseconds * 1e-6
         self.tempos.setdefault('idade_frame', []).append(idade)
+        nan = float('nan')
+        self._dbg = {'stamp': stamp, 'idade': idade, 't_klt': nan, 't_xfeat': nan, 'xfeat': 0,
+                     'n_m': 0, 'n_in': 0, 'rep': 0, 'perdas_ativo': 0, 'entradas': 0,
+                     'rms': nan, 'soma_w': 0.0, 'dmin': nan,
+                     'n_kp': 0, 'n_antes': 0, 'mantidos': 0, 'perdidos_klt': 0}
         t = self.marcar('copia', t_ini)
 
         if self.goal is None or self.K is None:
@@ -686,6 +847,7 @@ class XFeatKLTExtractor(Node):
         self.rastrear_klt(gray)
         n_ok = int(self.trk_ok.sum())
         t = self.marcar('klt', t)
+        self._dbg['t_klt'] = self.tempos['klt'][-1]
 
         # 2. XFeat só quando faltam IDs rastreados
         modo = 'KLT'
@@ -701,6 +863,7 @@ class XFeatKLTExtractor(Node):
                     self.trk_status[id_] = RESERVA
                     self.trk_idade[id_] = 0
                     self.trk_z[id_] = 0.0
+                    self.trk_zrej[id_] = 0
                     self.trk_w[id_] = 0.0
                     repostos.append(id_)
             self.frames_sem_xfeat = 0
@@ -708,16 +871,27 @@ class XFeatKLTExtractor(Node):
             modo = (f'KLT+XFeat (matches {n_m}, inliers {n_in}, repostos {sorted(repostos)}, '
                     f'{self.ultima_versao})')
             t = self.marcar('xfeat', t)
+            self._dbg.update(xfeat=1, n_m=n_m, n_in=n_in, rep=len(repostos), n_kp=self._ult_n_kp,
+                             t_xfeat=self.tempos['xfeat'][-1])
         else:
             self.frames_sem_xfeat += 1
         self.prev_gray = gray
 
-        # 3. Z atual dos rastreados (guarda o último Z válido de cada ID)
+        # 3. Z atual dos rastreados (rejeita saltos de profundidade, ex.: borda objeto/fundo)
         rastreados = np.where(self.trk_ok)[0]
         if len(rastreados):
             z_now = self.amostrar_z(depth_atual, self.trk_pts[rastreados], img.shape)
-            ok_z = z_now > 0
-            self.trk_z[rastreados[ok_z]] = z_now[ok_z]
+            for j, i in enumerate(rastreados):
+                z = z_now[j]
+                if z <= 0:
+                    continue                                  # sem leitura: mantém o último Z válido
+                zant = self.trk_z[i]
+                if zant > 0 and self.z_salto_max > 0 and abs(z - zant) > self.z_salto_max * zant:
+                    self.trk_zrej[i] += 1
+                    if self.trk_zrej[i] < 3:
+                        continue                              # salto isolado: mantém o Z anterior
+                self.trk_z[i] = z
+                self.trk_zrej[i] = 0
         t = self.marcar('z', t)
 
         # 4. Ativos: escolha inicial (espalhados), rampa e substituição
@@ -754,6 +928,7 @@ class XFeatKLTExtractor(Node):
         xs, ys = (pg[:, 0] - cx) / fx, (pg[:, 1] - cy) / fy
         e2 = np.column_stack([x - xs, y - ys])
         rms = float(np.sqrt(np.sum(w * np.sum(e2 ** 2, axis=1)) / soma_w)) if soma_w > 0 else 0.0
+        self._dbg.update(rms=rms, soma_w=soma_w)
 
         if rms < self.conv_thr and np.all(w > 0.99):
             self.conv_count += 1
@@ -782,6 +957,7 @@ class XFeatKLTExtractor(Node):
         t = self.marcar('erro_pub', t)
 
         dmin = self.dist_min(sel)
+        self._dbg['dmin'] = dmin
         if self.log_terminal:
             ativos_txt = ' '.join(f'{i}:{self.trk_w[i]:.2f}' for i in sel)
             self.get_logger().info(
@@ -802,6 +978,17 @@ class XFeatKLTExtractor(Node):
             return
         if self.goal is not None:
             g = self.goal['img'].copy()
+            # grade usada na escolha dos IDs (só no lado GOAL)
+            if self.mostrar_grade and self.goal.get('grade_bbox') is not None:
+                x0, y0, x1, y1 = self.goal['grade_bbox']
+                n = self.grade
+                cor_g = (255, 200, 0)
+                W, H = g.shape[1] - 1, g.shape[0] - 1
+                for k in range(n + 1):
+                    xk = min(int(round(x0 + (x1 - x0) * k / n)), W)
+                    yk = min(int(round(y0 + (y1 - y0) * k / n)), H)
+                    cv2.line(g, (xk, min(int(y0), H)), (xk, min(int(y1), H)), cor_g, 1)
+                    cv2.line(g, (min(int(x0), W), yk), (min(int(x1), W), yk), cor_g, 1)
             atual = img if img.shape[0] == g.shape[0] else cv2.resize(
                 img, (int(img.shape[1] * g.shape[0] / img.shape[0]), g.shape[0]))
             for id_, p in enumerate(self.goal['pts_id']):
