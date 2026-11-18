@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Extrator XFeat + SAM2 — ETAPA 1: teste da goal segmentada (simulação Gazebo OU RealSense D405).
+Extrator XFeat + SAM2 — ETAPA 2: goal segmentada + 20 IDs por score (simulação Gazebo OU RealSense D405).
 
 Fluxo:
-  sem goal : janela mostra só o frame atual (keypoints XFeat em azul)
+  sem goal : janela mostra só o frame atual
   g        : congela o frame -> desenha a caixa no objeto (Enter confirma, c cancela)
              -> SAM2 segmenta o objeto -> XFeat na goal, só keypoints dentro da máscara
-             -> salva rgb.png, depth.npy, mask.png, bbox.txt, goal_keypoints.csv
-  com goal : GOAL (máscara + keypoints em vermelho) | ATUAL (keypoints em azul)
-             + linhas amarelas de match (vizinho mais próximo mútuo, SEM RANSAC)
+             -> IDs = os n_pontos (20) keypoints de MAIOR SCORE de detecção do XFeat
+             -> salva rgb.png, depth.npy, mask.png, bbox.txt, goal_ids.csv
+  com goal : GOAL (máscara + só os IDs numerados) | ATUAL (só os IDs achados, mesmo número)
+             match = vizinho mais próximo mútuo entre TODOS os keypoints do objeto e o frame atual;
+             depois ficam só os pares cujo ponto da goal é um ID (SEM RANSAC)
 
-Ainda NÃO há: RANSAC, escolha dos 20 IDs, KLT, ativos nem erro.
+Score do XFeat = heatmap de keypoint x confiabilidade do descritor.
+
+Ainda NÃO há: RANSAC, KLT, 6 ativos nem erro.
 Publica em /ibvs/xfeat_features sempre [0, 0, stamp_sec, stamp_nanosec] (controle parado).
 
 O parâmetro 'sim' (vindo do launch) escolhe os defaults:
@@ -76,6 +80,7 @@ class XFeatSAM2Extractor(Node):
         # ---- XFeat ----
         self.declare_parameter('xfeat_path', os.path.expanduser('~/accelerated_features'))
         self.declare_parameter('top_k', 2048)          # keypoints do XFeat por imagem
+        self.declare_parameter('n_pontos', 20)         # IDs = n_pontos keypoints de maior score na máscara
         self.declare_parameter('max_dim', 640)
         self.declare_parameter('min_cossim', 0.82)     # similaridade mínima no match
         # ---- SAM2 ----
@@ -94,6 +99,7 @@ class XFeatSAM2Extractor(Node):
 
         self.goal_dir = gp('goal_dir')
         self.top_k = int(gp('top_k'))
+        self.n_pontos = int(gp('n_pontos'))
         self.max_dim = int(gp('max_dim'))
         self.min_cossim = float(gp('min_cossim'))
         self.sam2_path = gp('sam2_path')
@@ -152,7 +158,7 @@ class XFeatSAM2Extractor(Node):
         self.get_logger().info(
             f'XFeat+SAM2 iniciado [{"SIM" if self.sim else "REAL"}] ({self.xfeat.dev}) | '
             f'rgb={gp("rgb_topic")} | goal_dir={self.goal_dir} | top_k={self.top_k} | '
-            f'erosao={self.erosao} px | teclas: g = goal, q = sair')
+            f'n_pontos={self.n_pontos} | erosao={self.erosao} px | teclas: g = goal, q = sair')
 
     # ================================================================== callbacks
     def converter_depth(self, msg):
@@ -289,8 +295,14 @@ class XFeatSAM2Extractor(Node):
         kp, scores = kp[dentro], scores[dentro]
         desc = desc[torch.as_tensor(dentro, device=desc.device)]
 
+        # IDs = os n_pontos keypoints de maior score de detecção do XFeat (dentro do objeto)
+        sel = np.argsort(-scores)[:self.n_pontos]
+        id_de = np.full(len(kp), -1, dtype=int)       # índice do keypoint -> ID (-1 = não é ID)
+        id_de[sel] = np.arange(len(sel))
+
         self.goal = {'img': img.copy(), 'mask': mask, 'contorno': contorno, 'caixa': caixa,
                      'kp': kp.astype(np.float32), 'desc': desc, 'score': scores,
+                     'sel': sel, 'id_de': id_de,
                      'depth': None if depth is None else depth.copy()}
 
         if salvar:
@@ -301,17 +313,19 @@ class XFeatSAM2Extractor(Node):
             if caixa is not None:
                 np.savetxt(os.path.join(self.goal_dir, 'bbox.txt'), np.array(caixa)[None], fmt='%d',
                            header='x0 y0 x1 y1')
-        with open(os.path.join(self.goal_dir, 'goal_keypoints.csv'), 'w', newline='') as f:
+        with open(os.path.join(self.goal_dir, 'goal_ids.csv'), 'w', newline='') as f:
             wr = csv.writer(f)
-            wr.writerow(['u', 'v', 'score'])
-            for (pu, pv), s in zip(kp, scores):
-                wr.writerow([f'{pu:.3f}', f'{pv:.3f}', f'{s:.4f}'])
+            wr.writerow(['id', 'u', 'v', 'score'])
+            for i, j in enumerate(sel):
+                wr.writerow([i, f'{kp[j, 0]:.3f}', f'{kp[j, 1]:.3f}', f'{scores[j]:.4f}'])
 
+        if len(sel) == 0:
+            self.get_logger().warn(f'Goal definida SEM keypoints no objeto (0/{n_total})')
+            return
         self.get_logger().info(
             f'Goal {"salva e " if salvar else ""}definida: keypoints no objeto {len(kp)}/{n_total} | '
+            f'IDs {len(sel)} (score {scores[sel].min():.3f} a {scores[sel].max():.3f}) | '
             f'caixa {caixa} | {time.time() - t0:.1f} s')
-        if len(kp) == 0:
-            self.get_logger().warn('Nenhum keypoint XFeat dentro da mascara')
 
     # ================================================================== laço principal
     def publicar_vazio(self, stamp):
@@ -330,53 +344,62 @@ class XFeatSAM2Extractor(Node):
 
         t0 = time.perf_counter()
         kp_cur, desc_cur, _ = self.extrair(img)
+        ids, pts = np.zeros(0, int), np.zeros((0, 2), np.float32)
+        n_m = 0
         if self.goal is not None:
-            ig, ic = self.casar(self.goal['desc'], desc_cur)
-        else:
-            ig, ic = np.zeros(0, int), np.zeros(0, int)
+            ig, ic = self.casar(self.goal['desc'], desc_cur)      # match com todo o objeto
+            n_m = len(ig)
+            id_m = self.goal['id_de'][ig]
+            ok = id_m >= 0                                         # fica só quem é um dos IDs
+            ids, pts = id_m[ok], kp_cur[ic[ok]].astype(np.float32)
         t_ms = (time.perf_counter() - t0) * 1000.0
 
         if self.log_terminal:
-            n_goal = 0 if self.goal is None else len(self.goal['kp'])
+            n_ids = 0 if self.goal is None else len(self.goal['sel'])
             self.get_logger().info(
-                f'frame {self.n_frame} | keypoints goal {n_goal} | atual {len(kp_cur)} | '
-                f'matches {len(ig)} | xfeat+match {t_ms:.0f} ms')
+                f'frame {self.n_frame} | atual {len(kp_cur)} kp | matches {n_m} | '
+                f'IDs achados {len(ids)}/{n_ids} {sorted(ids.tolist())} | xfeat+match {t_ms:.0f} ms')
 
-        self.mostrar_imagem(img, kp_cur, ig, ic)
+        self.mostrar_imagem(img, ids, pts)
 
     # ================================================================== visualização
-    def mostrar_imagem(self, img, kp_cur, ig, ic):
+    def mostrar_imagem(self, img, ids, pts):
         if not self.mostrar:
             return
 
         if self.goal is None:
             vis = img.copy()
-            for p in kp_cur:
-                cv2.circle(vis, (int(p[0]), int(p[1])), 2, COR_KP_ATUAL, -1)
         else:
-            # GOAL: máscara translúcida + contorno + keypoints do objeto
+            # GOAL: máscara translúcida + contorno + só os IDs numerados
             g = self.goal['img'].copy()
             cor = g.copy()
             cor[self.goal['mask'] > 0] = COR_MASCARA
             g = cv2.addWeighted(g, 0.7, cor, 0.3, 0)
             cv2.drawContours(g, self.goal['contorno'], -1, COR_MASCARA, 2)
-            for p in self.goal['kp']:
-                cv2.circle(g, (int(p[0]), int(p[1])), 2, COR_KP_GOAL, -1)
+            pg = self.goal['kp'][self.goal['sel']]
+            for i, p in enumerate(pg):
+                c = (int(p[0]), int(p[1]))
+                cv2.circle(g, c, 4, COR_KP_GOAL, 2)
+                cv2.putText(g, str(i), (c[0] + 5, c[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COR_KP_GOAL, 1)
 
-            # ATUAL: mesma altura da goal + keypoints
+            # ATUAL: mesma altura da goal + só os IDs achados
             s = g.shape[0] / img.shape[0]
-            atual = img if s == 1.0 else cv2.resize(img, (int(img.shape[1] * s), g.shape[0]))
-            kc = kp_cur * s
-            for p in kc:
-                cv2.circle(atual, (int(p[0]), int(p[1])), 2, COR_KP_ATUAL, -1)
+            atual = img.copy() if s == 1.0 else cv2.resize(img, (int(img.shape[1] * s), g.shape[0]))
+            pc = pts * s
+            for i, p in zip(ids, pc):
+                c = (int(p[0]), int(p[1]))
+                cv2.circle(atual, c, 4, COR_KP_ATUAL, 2)
+                cv2.putText(atual, str(int(i)), (c[0] + 5, c[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            COR_KP_ATUAL, 1)
 
             vis = np.hstack([g, atual])
             off = g.shape[1]
 
-            # matches: goal -> atual
+            # match de cada ID: goal -> atual
             if self.desenhar_matches:
-                for a, b in zip(self.goal['kp'][ig], kc[ic]):
-                    cv2.line(vis, (int(a[0]), int(a[1])), (int(b[0]) + off, int(b[1])), COR_MATCH, 1)
+                for i, p in zip(ids, pc):
+                    a = pg[int(i)]
+                    cv2.line(vis, (int(a[0]), int(a[1])), (int(p[0]) + off, int(p[1])), COR_MATCH, 1)
 
         # faixa superior: só o erro
         cv2.rectangle(vis, (0, 0), (vis.shape[1], 40), (0, 0, 0), -1)
